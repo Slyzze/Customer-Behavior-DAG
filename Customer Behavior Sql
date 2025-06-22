@@ -1,0 +1,53 @@
+-- sql/staging/load_sessions_incremental.sql
+-- Load raw web and order events into a staging table (incremental load)
+CREATE OR REPLACE TABLE staging.sessions AS
+SELECT *
+FROM raw.events
+WHERE event_type IN ('page_view', 'purchase')
+  AND event_date >= CURRENT_DATE - INTERVAL '1 day';
+
+
+-- sql/transforms/create_session_metrics.sql
+-- Compute metrics per user session (duration, actions, conversion)
+CREATE OR REPLACE TABLE analytics.session_metrics AS
+SELECT
+  session_id,
+  user_id,
+  MIN(event_timestamp) AS session_start,
+  MAX(event_timestamp) AS session_end,
+  COUNT(*) AS actions,
+  SUM(CASE WHEN event_type = 'purchase' THEN 1 ELSE 0 END) AS purchases
+FROM staging.sessions
+GROUP BY session_id, user_id;
+
+
+-- sql/transforms/create_customer_metrics.sql
+-- Aggregate user-level KPIs for engagement and retention
+CREATE OR REPLACE TABLE analytics.customer_metrics AS
+SELECT
+  user_id AS customer_id,
+  COUNT(DISTINCT session_id) AS session_count,
+  SUM(purchases) AS total_orders,
+  MIN(session_start) AS first_seen,
+  MAX(session_end) AS last_seen,
+  DATEDIFF('day', MIN(session_start), MAX(session_end)) AS retention_days
+FROM analytics.session_metrics
+GROUP BY user_id;
+
+
+-- sql/reporting/customer_behavior_report.sql
+-- Create a final view with customer insights for BI tools
+CREATE OR REPLACE VIEW analytics.customer_behavior_report AS
+SELECT
+  customer_id,
+  session_count,
+  total_orders,
+  first_seen,
+  last_seen,
+  retention_days,
+  CASE
+    WHEN total_orders >= 5 THEN 'VIP'
+    WHEN total_orders >= 2 THEN 'Returning'
+    ELSE 'New'
+  END AS customer_segment
+FROM analytics.customer_metrics;
